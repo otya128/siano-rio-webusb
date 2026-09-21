@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FSUSB2i · WebUSB</title>
+  </head>
+  <body>
+    <main>
+      <h1>FSUSB2i</h1>
+      <section>
+        <h2>接続</h2>
+        <div>
+          <button id="connect">USB デバイスを選択</button
+          ><button id="disconnect" disabled>切断</button
+          ><span id="status" role="status">未接続</span>
+        </div>
+        <pre id="device-info">—</pre>
+      </section>
+      <section>
+        <h2>チューナー</h2>
+        <div>
+          <label
+            >UHF チャンネル
+            <input
+              id="channel"
+              type="number"
+              value="13"
+              min="13"
+              max="62" /></label
+          ><button id="tune" disabled>選局</button
+          ><button id="stats" disabled>受信状態を取得</button>
+        </div>
+        <pre id="statistics">—</pre>
+        <div>
+          <button id="record" disabled>TS 録画を開始</button
+          ><button id="stop" disabled>停止して保存</button
+          ><span id="bytes">0 bytes</span>
+        </div>
+        <a id="download" hidden>TS ファイルを保存</a>
+      </section>
+      <section>
+        <h2>カード</h2>
+        <div>
+          <button id="card-reset" disabled>カード初期化・ATR 取得</button>
+        </div>
+        <label for="apdu">APDU（16進数 / 最大 53 bytes）</label
+        ><input id="apdu" autocomplete="off" spellcheck="false" />
+        <button id="send" disabled>APDU を送信</button>
+        <pre id="card-output">—</pre>
+      </section>
+      <section>
+        <h2>ログ</h2>
+        <pre id="log" role="log" aria-live="polite">接続待ち</pre>
+      </section>
+    </main>
+    <script type="module" src="/demo/main.ts"></script>
+  </body>
+</html>
