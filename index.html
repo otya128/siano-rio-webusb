@@ -3,13 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FSUSB2i · WebUSB</title>
+    <title>Siano Rio · WebUSB</title>
   </head>
   <body>
     <main>
-      <h1>FSUSB2i</h1>
+      <h1>Siano Rio (SMS2270)</h1>
       <section>
         <h2>接続</h2>
+        <div>
+          <label
+            >ファームウェア (isdbt_rio.inp)
+            <input id="firmware" type="file" accept=".inp" /></label
+          ><span id="firmware-info"
+            >未選択（ファームウェア起動済みのデバイスでは不要）</span
+          >
+        </div>
         <div>
           <button id="connect">USB デバイスを選択</button
           ><button id="disconnect" disabled>切断</button
@@ -28,6 +36,12 @@
               value="13"
               min="13"
               max="62" /></label
+          ><label
+            >帯域
+            <select id="bandwidth">
+              <option value="13seg">13 セグメント</option>
+              <option value="1seg">1 セグメント</option>
+            </select></label
           ><button id="tune" disabled>選局</button
           ><button id="stats" disabled>受信状態を取得</button>
         </div>
@@ -58,16 +72,6 @@
         </div>
         <video id="video" controls playsinline width="320" height="180"></video>
         <pre id="player-info">—</pre>
-      </section>
-      <section>
-        <h2>カード</h2>
-        <div>
-          <button id="card-reset" disabled>カード初期化・ATR 取得</button>
-        </div>
-        <label for="apdu">APDU（16進数 / 最大 53 bytes）</label
-        ><input id="apdu" autocomplete="off" spellcheck="false" />
-        <button id="send" disabled>APDU を送信</button>
-        <pre id="card-output">—</pre>
       </section>
       <section>
         <h2>ログ</h2>

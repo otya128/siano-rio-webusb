@@ -1,7 +1,8 @@
-# FSUSB2i_WebUSB
+# siano-rio-webusb
 
-BonD_FSUSB2i_CardをベースにしたTypeScript+WebUSB製のFSUSB2iドライバー
+LinuxのSianoドライバー (`smsusb`/`smscore`/`smsdvb`) を参考にしたTypeScript+WebUSB製のSiano Rio (SMS2270) ISDB-Tチューナードライバー
 
-demo <https://otya128.github.io/FSUSB2i_WebUSB>
+対応デバイスの例
 
-- <https://github.com/otya128/BonD_FSUSB2i_Card>
+- `187f:0600` VASTDTV VT20, MyGica S270
+- `3275:0080` PLEX PX-S1UD

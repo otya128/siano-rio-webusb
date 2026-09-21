@@ -14,7 +14,7 @@ export function createPushPlayer(
   class PushLoader extends mpegts.BaseLoader {
     private received = 0;
     constructor() {
-      super("fsusb2i-push-loader");
+      super("siano-rio-push-loader");
       this._needStash = false;
     }
     open() {
@@ -35,7 +35,7 @@ export function createPushPlayer(
     }
   }
   const player = mpegts.createPlayer(
-    { type: "mpegts", isLive: true, url: "webusb://fsusb2i/oneseg" },
+    { type: "mpegts", isLive: true, url: "webusb://siano-rio/oneseg" },
     {
       customLoader: PushLoader,
       enableStashBuffer: false,

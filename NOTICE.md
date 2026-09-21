@@ -1,26 +1,32 @@
 # Source and modifications
 
-This is a TypeScript/WebUSB port of:
+This is a TypeScript/WebUSB port of the Siano SMS1xxx/SMS2xxx drivers in the Linux kernel:
 
-- https://github.com/otya128/BonD_FSUSB2i_Card
-- Source revision: e28bc8b6fda78ded3a17c99b8b8e5363049db539
-- Original fsusb2i driver: (c) 2015–2016 trinity19683
-- Original readMe.txt describes the source as based on GPLv3. The GPL version 3 license text is preserved in LICENSE.
-- The fork's card implementation in it9175.c / BonDriver/scard.cpp is used as the basis for the card reader port.
+- `drivers/media/usb/siano/smsusb.c` — Copyright (C) 2005-2009, Uri Shkolnik, Anatoly Greenblat (Siano Mobile Silicon, Inc.), GPL-2.0-or-later
+- `drivers/media/common/siano/smscoreapi.c`, `smscoreapi.h` — Copyright (C) 2006-2008, Uri Shkolnik, Anatoly Greenblat, GPL-2.0-or-later
+- `drivers/media/common/siano/smsdvb-main.c`, `smsdvb.h`, `smsendian.c` — Copyright (C) 2006-2009, Uri Shkolnik, GPL-2.0-or-later
+- `drivers/media/mmc/siano/smssdio.c` — Copyright (C) 2008 Pierre Ossman, GPL-2.0-or-later (consulted for the message/split-message framing only)
+- `drivers/media/common/siano/sms-cards.c`, `sms-cards.h` — Copyright (c) 2008 Michael Krufky, GPL-2.0-only; only the factual USB ID / board type / default mode entries for `SMS1XXX_BOARD_SIANO_RIO` were used, no code
+- Source revision: Linux 7.3-rc4 (93f51579e7df248780214094418f205253383cc5)
 
-Modifications (2026-09-21): replaced Windows/WinUSB and thread/DLL interfaces with TypeScript, WebUSB, serialized asynchronous operations and an async TS iterator; ported tuner initialization, calibration, tuning, statistics, TMCC and smart-card operations; added bounds checks, response validation, cancellation/timeout handling, a browser demonstration and mock/C-reference tests. All implementation code is TypeScript; Python tools only regenerate data and C reference fixtures during development.
+The GPL-2.0-or-later sources are used here under GPL version 3, so the whole project stays under the GPL-3.0-only terms in LICENSE.
 
-Firmware in src/firmware-data.ts is copied byte-for-byte from it9175_fw.h (the upstream symbol is spelled it9179_fw1). The original firmware notice is:
+Mapping of the port (2026-09-21):
 
-    IT9175 firmware
-    it9175_fw.h
-    2015-12-06
-    original: IT9175 BDA Driver for USB Device
-    Copyright (C) 2013 ITE Technologies, Inc.
-    IT9175BDA.sys
-    2013-02-27
+- `src/messages.ts` — `enum msg_types`, device modes, bandwidth modes, task ids from `smscoreapi.h`
+- `src/protocol.ts` — `struct sms_msg_hdr` framing and the split-message realignment of `smsusb_onresponse()`
+- `src/transport.ts` — `smsusb.c`: interface/endpoint selection, `MAX_URBS` queued bulk IN reads, `smsusb_sendrequest()`, completion-style waiting (`smscore_sendrequest_and_wait()`)
+- `src/firmware.ts`, `src/core.ts` — `smscoreapi.c`: `smscore_detect_mode()`, `smscore_set_device_mode()`, `smscore_load_firmware_family2()`, `smscore_init_device()`, `smscore_configure_board()`
+- `src/isdbt.ts` — `smsdvb-main.c`: `smsdvb_isdbt_set_frontend()`, PID filters, `smsdvb_send_statistics_request()`, `struct sms_isdbt_stats(_ex)` decoding, lock indications
 
-This notice preserves the upstream attribution and does not assert additional rights in the embedded third-party firmware.
+Deliberate differences from the kernel:
+
+- Firmware is not looked up from `/lib/firmware`; the caller passes the image (`isdbt_rio.inp`). Exactly `length` bytes of the image payload are sent, while the kernel sends `fw->size` bytes from the payload and therefore 12 bytes past the end of the file.
+- After a firmware download `MSG_SMS_GET_VERSION_EX_REQ` is sent again so the reported ids describe the running firmware.
+- There is no DVB demux: `stream()` adds PID filters (0x2000 by default) and hands out the raw `MSG_SMS_DVBT_BDA_DATA` payloads realigned to 188-byte packets. A slow consumer drops data instead of stalling the USB reads, which the control channel shares.
+- IR, GPIO/LED, LNA and board-specific hooks are omitted; Rio has none in `sms_boards`.
+
+No firmware is included. `isdbt_rio.inp` is proprietary Siano firmware and must be supplied by the user.
 
 # Third-party components used by the demonstration page
 

@@ -1,7 +1,7 @@
 {
-  "name": "fsusb2i-webusb",
+  "name": "siano-rio-webusb",
   "version": "0.1.0",
-  "description": "TypeScript WebUSB port of BonD_FSUSB2i_Card",
+  "description": "TypeScript WebUSB driver for Siano Rio (SMS2270) ISDB-T receivers, ported from the Linux smsusb/smscore/smsdvb drivers",
   "type": "module",
   "license": "GPL-3.0-only",
   "files": [

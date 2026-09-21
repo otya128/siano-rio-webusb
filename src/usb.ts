@@ -3,6 +3,7 @@ export interface UsbEndpoint {
   readonly endpointNumber: number;
   readonly direction: "in" | "out";
   readonly type: "bulk" | "interrupt" | "isochronous";
+  readonly packetSize: number;
 }
 export interface UsbAlternate {
   readonly alternateSetting: number;
@@ -28,6 +29,7 @@ export interface UsbDevice {
   claimInterface(number: number): Promise<void>;
   selectAlternateInterface(number: number, alternate: number): Promise<void>;
   releaseInterface(number: number): Promise<void>;
+  clearHalt(direction: "in" | "out", endpointNumber: number): Promise<void>;
   transferOut(
     endpoint: number,
     data: BufferSource,

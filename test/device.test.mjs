@@ -1,130 +1,242 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Fsusb2i, channelFrequency, TsPacketFramer } from "../dist/index.js";
-import { firmwarePackets } from "../dist/firmware.js";
-import { firmware } from "../dist/firmware-data.js";
-import { FakeUsb, packets } from "./fake-usb.mjs";
+import {
+  SianoRio,
+  channelFrequency,
+  TsPacketFramer,
+  PID_ALL,
+  Msg,
+  DeviceMode,
+} from "../dist/index.js";
+import { FakeUsb, MSG, firmwareImage, packets } from "./fake-usb.mjs";
 
-test("scatter firmware preserves every source bank/address/data byte", () => {
-  const expected = new Map();
-  let offset = 0;
-  do {
-    const bank = firmware[offset++];
-    while (true) {
-      const length = firmware[offset++] * 256 + firmware[offset++];
-      if (!length) break;
-      const address = firmware[offset++] * 256 + firmware[offset++];
-      for (let i = 0; i < length; i++)
-        expected.set(bank * 65536 + address + i, firmware[offset++]);
-    }
-  } while (firmware[offset]);
-  const actual = new Map();
-  for (const packet of firmwarePackets(firmware)) {
-    assert.ok(packet.length <= 48);
-    assert.equal(packet[0], 3);
-    const count = packet[3];
-    assert.ok(count > 0 && count <= 3);
-    let p = 4 + count * 3;
-    for (let i = count - 1; i >= 0; i--) {
-      const address = packet[4 + i * 3] * 256 + packet[5 + i * 3],
-        length = packet[6 + i * 3];
-      for (let j = 0; j < length; j++)
-        actual.set(packet[1] * 65536 + address + j, packet[p++]);
-    }
-    assert.equal(p, packet.length);
-  }
-  assert.deepEqual(actual, expected);
-  for (const bytes of [
-    new Uint8Array(),
-    firmware.slice(0, -1),
-    Uint8Array.of(0, 0, 0, 0),
-  ])
-    assert.throws(() => firmwarePackets(bytes));
-});
-test("warm initialization, channel 39 tuning, statistics, TMCC and clean close", async () => {
+const types = (usb) => usb.sent.map((m) => m.type);
+
+test("warm start: version query, INIT_DEVICE, tune, statistics and close", async () => {
   const usb = new FakeUsb(),
-    dev = await Fsusb2i.open(usb);
-  assert.equal(dev.info.chipId, 0x91758301);
-  assert.equal(dev.info.firmwareVersion, 0x04030201);
-  assert.equal(
-    usb.commands.some((c) => c[2] === 0x29),
-    false,
-  );
-  assert.equal(usb.registers.get(0xdd88), 0xff);
-  assert.equal(usb.registers.get(0xdd89), 0x37);
-  assert.equal(usb.registers.get(0x80f996), 0xff);
-  assert.equal(usb.registers.get(0x80f997), 0x1f);
+    dev = await SianoRio.open(usb);
+  assert.equal(dev.info.chipModel, 0x2270);
+  assert.equal(dev.info.firmwareId, DeviceMode.ISDBT_BDA);
+  assert.equal(dev.info.mode, DeviceMode.ISDBT_BDA);
+  assert.equal(dev.info.label, "SMS2270 Rio");
+  assert.equal(dev.info.firmwareDownloaded, false);
+  // Firmware already serves ISDBT_BDA: smscore_set_device_mode() returns before any INIT_DEVICE.
+  assert.deepEqual(types(usb), [Msg.MSG_SMS_GET_VERSION_EX_REQ]);
+  assert.equal(usb.sent[0].dst, 11);
   assert.equal(channelFrequency(39), 629143);
-  await dev.setChannel(39);
-  // Calibrated N-divider=6, index=6, fdiv=3, xtal=2000. Frequency register must retain index bits.
-  const lo = Math.floor((629143 * 18) / 2000 + 0.5) | (6 << 13);
-  assert.equal(usb.registers.get(0x80015e), lo & 255);
-  assert.equal(usb.registers.get(0x80015f), (lo >>> 8) & 255);
-  assert.equal(
-    usb.registers.get(0x8001e2),
-    (((4 << 13) | (lo & 8191)) >>> 8) & 255,
-  );
-  usb.registers.set(0x800047, 1);
-  assert.equal((await dev.waitTuning()).status, "locked");
-  usb.registers.set(0x80f999, 1);
-  usb.registers.set(0x80f980, 1);
-  assert.equal((await dev.waitStream()).overflow, true);
-  assert.equal(usb.registers.get(0x80f980), 0);
-  usb.registers.set(0x80013f, 42);
-  assert.equal((await dev.readStatistics()).strengthDbm, -58);
-  usb.registers.set(0x80f900, 1);
-  assert.equal((await dev.readTmcc()).mode, 3);
-  usb.registers.set(0x80004c, 0);
-  // Emulate firmware clearing the sleep handshake written by the driver.
-  const original = usb.transferOut.bind(usb);
-  usb.transferOut = async (...args) => {
-    const result = await original(...args);
-    usb.registers.set(0x80004c, 0);
-    return result;
-  };
+  await dev.tuneChannel(39);
+  assert.deepEqual(usb.tunes, [[629143000, 8, 12000000, 0]]);
+  await dev.tuneChannel(13, { bandwidth: "1seg" });
+  await dev.tune(473143, { bandwidth: "3seg", segmentIndex: 2 });
+  assert.deepEqual(usb.tunes.slice(1), [
+    [473143000, 4, 12000000, 0],
+    [473143000, 5, 12000000, 2],
+  ]);
+  const tune = usb.sent.find((m) => m.type === Msg.MSG_SMS_ISDBT_TUNE_REQ);
+  assert.equal(tune.src, 201);
+  assert.equal(tune.dst, 11);
+  await assert.rejects(dev.tune(1000), /Hz/);
+  await assert.rejects(dev.tuneChannel(63), /13–62/);
+  const stats = await dev.readStatistics();
+  assert.equal(stats.extended, true); // rom 8.1 >= 0x800 selects GET_STATISTICS_EX
+  assert.equal(stats.demodLocked, true);
+  assert.equal(dev.status, "locked");
+  assert.equal(usb.sent.at(-1).type, Msg.MSG_SMS_GET_STATISTICS_EX_REQ);
+  // Rate limited: a second read within 100 ms returns the cached statistics.
+  assert.equal(await dev.readStatistics(), stats);
+  assert.equal(usb.sent.at(-1).type, Msg.MSG_SMS_GET_STATISTICS_EX_REQ);
+  usb.stats.demodLocked = 0;
+  usb.stats.rfLocked = 1;
+  await new Promise((r) => setTimeout(r, 110));
+  assert.equal((await dev.readStatistics()).demodLocked, false);
+  assert.equal(dev.status, "signal");
   await dev.close();
   await dev.close();
   assert.equal(usb.closeCount, 1);
   await assert.rejects(dev.readStatistics(), /closed/);
 });
-test("cold initialization downloads firmware and rejects unsupported hardware", async () => {
+test("old ROMs use MSG_SMS_GET_STATISTICS_REQ and indications update the status", async () => {
   const usb = new FakeUsb();
-  usb.firmwareLoaded = false;
-  const dev = await Fsusb2i.open(usb);
-  assert.equal(
-    usb.commands.filter((c) => c[2] === 0x29).length,
-    firmwarePackets(firmware).length,
-  );
+  usb.romVersion = [2, 1, 0, 0];
+  const dev = await SianoRio.open(usb);
+  const stats = await dev.readStatistics();
+  assert.equal(stats.extended, false);
+  assert.equal(usb.sent.at(-1).type, Msg.MSG_SMS_GET_STATISTICS_REQ);
+  usb.respond(MSG.NO_SIGNAL_IND);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(dev.status, "no-signal");
+  usb.respond(MSG.SIGNAL_DETECTED_IND);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(dev.status, "locked");
   await dev.close();
-  const bad = new FakeUsb();
-  bad.registers.set(0x1222, 2);
-  await assert.rejects(Fsusb2i.open(bad), /Unsupported chip/);
-  assert.equal(bad.opened, false);
 });
-test("card reset/IFS and concurrent APDUs preserve alternating sequence", async () => {
-  const usb = new FakeUsb(),
-    dev = await Fsusb2i.open(usb);
-  assert.deepEqual([...(await dev.resetCard())], [0x3b, 0]);
-  const result = await Promise.all([
-    dev.transmitCard(Uint8Array.of(0, 0xa4)),
-    dev.transmitCard(Uint8Array.of(0, 0xb0)),
+test("cold start downloads the firmware exactly as smscore_load_firmware_family2()", async () => {
+  const usb = new FakeUsb();
+  usb.firmwareId = 255;
+  const image = firmwareImage(700, 0x40000);
+  await assert.rejects(SianoRio.open(usb), /needs a firmware image/);
+  assert.equal(usb.opened, false);
+  const cold = new FakeUsb();
+  cold.firmwareId = 255;
+  const dev = await SianoRio.open(cold, { firmware: image });
+  assert.equal(dev.info.firmwareDownloaded, true);
+  assert.equal(dev.info.firmwareId, 6);
+  const sequence = types(cold);
+  assert.deepEqual(sequence, [
+    Msg.MSG_SMS_GET_VERSION_EX_REQ,
+    Msg.MSG_SMS_DATA_DOWNLOAD_REQ,
+    Msg.MSG_SMS_DATA_DOWNLOAD_REQ,
+    Msg.MSG_SMS_DATA_DOWNLOAD_REQ,
+    Msg.MSG_SMS_DATA_VALIDITY_REQ,
+    Msg.MSG_SMS_SWDOWNLOAD_TRIGGER_REQ,
+    Msg.MSG_SMS_INIT_DEVICE_REQ,
+    Msg.MSG_SMS_INIT_DEVICE_REQ,
+    Msg.MSG_SMS_GET_VERSION_EX_REQ,
   ]);
-  assert.deepEqual(
-    result.map((b) => [...b]),
-    [
-      [0x90, 0],
-      [0x90, 0],
-    ],
+  const loaded = Array.from({ length: 700 }, (_, i) =>
+    cold.memory.get(0x40000 + i),
+  );
+  assert.deepEqual(loaded, [...image.subarray(12)]);
+  const validity = cold.sent.find(
+    (m) => m.type === Msg.MSG_SMS_DATA_VALIDITY_REQ,
+  );
+  const view = new DataView(
+    validity.payload.buffer,
+    validity.payload.byteOffset,
   );
   assert.deepEqual(
-    usb.commands.filter((c) => c[2] === 5).map((c) => c[6]),
-    [0xc1, 0, 0x40],
+    [view.getUint32(0, true), view.getUint32(4, true), view.getUint32(8, true)],
+    [0x40000, 700, 0],
   );
-  await assert.rejects(dev.transmitCard(new Uint8Array(54)), /1–53/);
-  usb.registers.set(0x80fba5, 1);
-  await assert.rejects(dev.transmitCard(Uint8Array.of(0)), /not present/);
-  assert.equal(dev.atr.length, 0);
+  const trigger = cold.sent.find(
+    (m) => m.type === Msg.MSG_SMS_SWDOWNLOAD_TRIGGER_REQ,
+  );
+  const tv = new DataView(trigger.payload.buffer, trigger.payload.byteOffset);
+  assert.deepEqual(
+    [0, 1, 2, 3, 4].map((i) => tv.getUint32(i * 4, true)),
+    [0x40000, 6, 0x200, 0, 4],
+  );
+  const init = cold.sent.find((m) => m.type === Msg.MSG_SMS_INIT_DEVICE_REQ);
+  assert.deepEqual([...init.payload], [6, 0, 0, 0]);
   await dev.close();
+});
+test("switching modes on running firmware reloads through SW_RELOAD_START/EXEC", async () => {
+  const usb = new FakeUsb();
+  usb.firmwareId = DeviceMode.DVBT_BDA;
+  const image = firmwareImage(300, 0x40000);
+  const dev = await SianoRio.open(usb, { firmware: image });
+  assert.deepEqual(types(usb).slice(0, 5), [
+    Msg.MSG_SMS_GET_VERSION_EX_REQ,
+    Msg.MSG_SW_RELOAD_START_REQ,
+    Msg.MSG_SMS_DATA_DOWNLOAD_REQ,
+    Msg.MSG_SMS_DATA_DOWNLOAD_REQ,
+    Msg.MSG_SMS_DATA_VALIDITY_REQ,
+  ]);
+  assert.equal(types(usb)[5], Msg.MSG_SW_RELOAD_EXEC_REQ);
+  // Reload writes to the address stored at payload[20], not the image start address.
+  assert.equal(usb.memory.get(0x20000), image[12]);
+  assert.equal(usb.memory.has(0x40000), false);
+  assert.equal(dev.info.mode, DeviceMode.ISDBT_BDA);
+  await dev.close();
+  const other = new FakeUsb();
+  await assert.rejects(
+    SianoRio.open(other, { mode: DeviceMode.DVBT_BDA, firmware: image }),
+    /not ISDB-T/,
+  );
+  assert.equal(other.opened, false);
+});
+test("split responses are accepted through the transport", async () => {
+  const usb = new FakeUsb();
+  usb.splitResponses = true;
+  const dev = await SianoRio.open(usb);
+  assert.equal(dev.info.label, "SMS2270 Rio");
+  assert.equal((await dev.readStatistics()).snrDb, 25);
+  await dev.close();
+});
+test("stream adds the PID filter, yields aligned TS and removes the filter when done", async () => {
+  const usb = new FakeUsb(),
+    dev = await SianoRio.open(usb);
+  const input = packets(300);
+  // Arbitrary chunking, as the firmware does not align MSG_SMS_DVBT_BDA_DATA to 188 bytes.
+  usb.tsChunks.push(
+    input.subarray(0, 1000),
+    input.subarray(1000, 20000),
+    input.subarray(20000),
+  );
+  const stream = dev.stream();
+  const first = await stream.next();
+  assert.equal(usb.sent.at(-1).type, Msg.MSG_SMS_ADD_PID_FILTER_REQ);
+  assert.deepEqual([...usb.pidFilters], [PID_ALL]);
+  assert.deepEqual(dev.pidFilters, [PID_ALL]);
+  const received = [first.value];
+  while (received.reduce((n, c) => n + c.length, 0) < input.length)
+    received.push((await stream.next()).value);
+  assert.deepEqual(Buffer.concat(received), Buffer.from(input));
+  await assert.rejects(dev.stream().next(), /one TS consumer/);
+  // Tuning while streaming is allowed, as with a DVB frontend.
+  await dev.tuneChannel(20);
+  await stream.return();
+  assert.equal(usb.sent.at(-1).type, Msg.MSG_SMS_REMOVE_PID_FILTER_REQ);
+  assert.equal(usb.pidFilters.size, 0);
+  assert.equal(dev.closed, false);
+  // A second stream with explicit PIDs works on the same session.
+  usb.tsChunks.push(packets(3));
+  const second = dev.stream({ pids: [0, 0x1fc8] });
+  assert.equal((await second.next()).value.length, 564);
+  assert.deepEqual([...usb.pidFilters], [0, 0x1fc8]);
+  await second.return();
+  await dev.close();
+});
+test("aborting a waiting stream ends it promptly and keeps the device usable", async () => {
+  const usb = new FakeUsb(),
+    dev = await SianoRio.open(usb),
+    abort = new AbortController();
+  const stream = dev.stream({ signal: abort.signal });
+  const read = stream.next();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  abort.abort();
+  assert.equal((await read).done, true);
+  assert.equal(dev.closed, false);
+  assert.equal(usb.pidFilters.size, 0);
+  assert.equal((await dev.readStatistics()).rfLocked, true);
+  // Closing while a stream waits ends the stream and removes filters before the USB handle goes.
+  const stream2 = dev.stream();
+  const read2 = stream2.next();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await dev.close();
+  assert.equal((await read2).done, true);
+  assert.equal(usb.pidFilters.size, 0);
+  assert.equal(usb.closeCount, 1);
+});
+test("a slow consumer loses the oldest data instead of stalling the control channel", async () => {
+  const usb = new FakeUsb(),
+    dev = await SianoRio.open(usb);
+  const stream = dev.stream({ maxQueuedBytes: 188 * 10 });
+  // Prime a waiting consumer, then flood the device while it is not pulling.
+  const pending = stream.next();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  for (let i = 0; i < 20; i++) usb.tsChunks.push(packets(1));
+  usb.flushTs();
+  // The framer needs three sync bytes before it emits, so the first chunk merges a few packets.
+  assert.equal((await pending).value.length % 188, 0);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(dev.droppedBytes >= 188 * 6, `dropped ${dev.droppedBytes}`);
+  assert.ok(dev.droppedBytes % 188 === 0);
+  // Control traffic still flows while the queue is saturated.
+  assert.equal((await dev.readStatistics()).demodLocked, true);
+  await stream.return();
+  await dev.close();
+});
+test("a reader failure surfaces through the stream and closes the device", async () => {
+  const usb = new FakeUsb(),
+    dev = await SianoRio.open(usb);
+  const stream = dev.stream();
+  const read = stream.next();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const reader = usb.readers.shift();
+  reader.reject(new Error("device gone"));
+  await assert.rejects(read, /device gone/);
+  assert.equal(dev.closed, true);
 });
 test("TS framing survives every split point and recovers from inserted garbage", () => {
   const input = packets(5);
@@ -138,52 +250,4 @@ test("TS framing survives every split point and recovers from inserted garbage",
   const dirty = Uint8Array.from([1, 2, 3, ...input, 8, 9, ...input]);
   assert.deepEqual(framer.push(dirty), Uint8Array.from([...input, ...input]));
   assert.equal(framer.droppedBytes, 5);
-});
-test("aborting a pending TS read closes it promptly, ending the iterator", async () => {
-  const usb = new FakeUsb(),
-    dev = await Fsusb2i.open(usb),
-    abort = new AbortController();
-  const stream = dev.stream({ signal: abort.signal });
-  const read = stream.next();
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  abort.abort();
-  assert.equal((await read).done, true);
-  assert.equal(dev.closed, true);
-  assert.equal(usb.closeCount, 1);
-});
-test("stream rejects a second consumer, disallows tuning, closes on iterator return", async () => {
-  const usb = new FakeUsb(),
-    dev = await Fsusb2i.open(usb);
-  usb.tsChunks.push(packets(5));
-  const stream = dev.stream();
-  assert.equal((await stream.next()).value.length, 940);
-  await assert.rejects(dev.stream().next(), /one TS consumer/);
-  await assert.rejects(dev.setChannel(13), /retuning/);
-  await stream.return();
-  assert.equal(dev.closed, true);
-});
-
-test("all initialization and tuning register writes match original C on three clock modes", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const traces = JSON.parse(
-    await readFile(
-      new URL("./fixtures/c-tuning-traces.json", import.meta.url),
-      "utf8",
-    ),
-  );
-  for (const { mode, frequencies, writes } of traces) {
-    const usb = new FakeUsb();
-    usb.registers.set(0x80ec86, mode);
-    const dev = await Fsusb2i.open(usb);
-    for (const frequency of frequencies) {
-      usb.registers.set(0x8001c6, 1);
-      await dev.setFrequency(frequency);
-    }
-    assert.deepEqual(
-      usb.writes,
-      writes,
-      `C trace differs for clock mode ${mode}`,
-    );
-    await dev.close();
-  }
 });

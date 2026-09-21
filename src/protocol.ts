@@ -1,17 +1,10 @@
-// Ported from it9175_usb.c (c) 2015-2016 trinity19683. GPL-3.0-only.
-export const MAX_TRANSFER = 64;
-export const TS_TRANSFER_SIZE = 305 * 188;
-export const Command = {
-  read: 0x00,
-  write: 0x01,
-  cardRead: 0x04,
-  cardWrite: 0x05,
-  cardMode: 0x06,
-  firmwareDownload: 0x21,
-  firmwareQuery: 0x22,
-  firmwareBoot: 0x23,
-  firmwareScatter: 0x29,
-} as const;
+// Message framing ported from smscoreapi.h / smsusb.c / smsendian.c (Siano Mobile Silicon). GPL-2.0-or-later.
+import { HIF_TASK, MSG_HDR_FLAG_SPLIT_MSG, messageName } from "./messages.js";
+
+/** struct sms_msg_hdr: msg_type u16, msg_src_id u8, msg_dst_id u8, msg_length u16 (whole message), msg_flags u16. All little-endian. */
+export const HEADER_SIZE = 8;
+/** USB2_BUFFER_SIZE: every bulk IN read carries at most one message of this size. */
+export const USB_BUFFER_SIZE = 0x2000;
 
 export class ProtocolError extends Error {
   constructor(message: string) {
@@ -19,45 +12,82 @@ export class ProtocolError extends Error {
     this.name = "ProtocolError";
   }
 }
-export function checksum(bytes: Uint8Array): number {
-  let sum = 0;
-  for (let i = 1; i < bytes.length - 2; i++)
-    sum += i & 1 ? bytes[i] << 8 : bytes[i];
-  return ~sum & 0xffff;
+export interface MessageHeader {
+  type: number;
+  src: number;
+  dst: number;
+  length: number;
+  flags: number;
 }
-export function encodeRequest(
-  command: number,
-  mailbox: number,
-  sequence: number,
-  payload: Uint8Array,
+export interface Message extends MessageHeader {
+  /** Bytes following the header (after split-message realignment). */
+  payload: Uint8Array;
+}
+export const u32le = (...values: number[]): Uint8Array<ArrayBuffer> => {
+  const bytes = new Uint8Array(values.length * 4);
+  const view = new DataView(bytes.buffer);
+  values.forEach((value, i) => view.setUint32(i * 4, value >>> 0, true));
+  return bytes;
+};
+/** SMS_INIT_MSG_EX(): build a complete message; msg_length counts the header. */
+export function encodeMessage(
+  type: number,
+  payload: Uint8Array | ArrayLike<number> = new Uint8Array(0),
+  src = 0,
+  dst = HIF_TASK,
+  flags = 0,
 ): Uint8Array<ArrayBuffer> {
-  if (payload.length > 58)
-    throw new RangeError("USB command payload exceeds 58 bytes");
-  const result = new Uint8Array(payload.length + 6);
-  result.set([result.length - 1, mailbox, command, sequence]);
-  result.set(payload, 4);
-  const sum = checksum(result);
-  result.set([sum >> 8, sum & 255], result.length - 2);
-  return result;
+  const data = Uint8Array.from(payload);
+  if (data.length + HEADER_SIZE > 0xffff)
+    throw new RangeError("Message exceeds 65535 bytes");
+  const message = new Uint8Array(HEADER_SIZE + data.length);
+  const view = new DataView(message.buffer);
+  view.setUint16(0, type, true);
+  message[2] = src;
+  message[3] = dst;
+  view.setUint16(4, message.length, true);
+  view.setUint16(6, flags, true);
+  message.set(data, HEADER_SIZE);
+  return message;
 }
-export function decodeResponse(
+export function decodeHeader(bytes: Uint8Array): MessageHeader {
+  if (bytes.length < HEADER_SIZE)
+    throw new ProtocolError("Short message header");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return {
+    type: view.getUint16(0, true),
+    src: bytes[2],
+    dst: bytes[3],
+    length: view.getUint16(4, true),
+    flags: view.getUint16(6, true),
+  };
+}
+/**
+ * smsusb_onresponse(): one bulk IN transfer holds one message. With
+ * MSG_HDR_FLAG_SPLIT_MSG the firmware left a gap after the header so the
+ * payload begins at responseAlignment + ((flags >> 8) & 3) + HEADER_SIZE.
+ * Returns undefined for a transfer the kernel would log and drop.
+ */
+export function decodeMessage(
   bytes: Uint8Array,
-  sequence: number,
-  length: number,
-): Uint8Array {
-  if (bytes.length !== length + 5 || bytes[0] !== bytes.length - 1)
-    throw new ProtocolError("Invalid USB response length");
-  if (
-    checksum(bytes) !==
-    ((bytes[bytes.length - 2] << 8) | bytes[bytes.length - 1])
-  )
-    throw new ProtocolError("USB checksum mismatch");
-  if (bytes[1] !== sequence)
-    throw new ProtocolError("USB response sequence mismatch");
-  if (bytes[2] !== 0)
-    throw new ProtocolError(`Device status 0x${bytes[2].toString(16)}`);
-  return bytes.slice(3, -2);
+  responseAlignment: number,
+): Message | undefined {
+  if (bytes.length < HEADER_SIZE) return undefined;
+  const header = decodeHeader(bytes);
+  if (header.length < HEADER_SIZE || bytes.length < header.length)
+    return undefined;
+  let offset = 0;
+  if (responseAlignment && header.flags & MSG_HDR_FLAG_SPLIT_MSG) {
+    offset = responseAlignment + ((header.flags >> 8) & 3);
+    if (header.length + offset > bytes.length) return undefined;
+  }
+  return {
+    ...header,
+    payload: bytes.slice(offset + HEADER_SIZE, offset + header.length),
+  };
 }
+export const describeMessage = (header: MessageHeader): string =>
+  `${messageName(header.type)}(${header.type}) size: ${header.length}`;
 
 /** Each submitted operation runs to completion before the next starts. */
 export class SerialQueue {

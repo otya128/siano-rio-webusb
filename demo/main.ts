@@ -1,4 +1,9 @@
-import { Fsusb2i, OneSegFilter, type TsProgram } from "../src/index.js";
+import {
+  SianoRio,
+  OneSegFilter,
+  type IsdbtBandwidth,
+  type TsProgram,
+} from "../src/index.js";
 import {
   createPushPlayer,
   isPlaybackSupported,
@@ -11,13 +16,9 @@ const output = (id: string, value: unknown) => {
   element(id).textContent =
     typeof value === "string" ? value : JSON.stringify(value, null, 2);
 };
-const hex = (bytes: Uint8Array) =>
-  [...bytes]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join(" ")
-    .toUpperCase();
 const RECORD_LIMIT = 64 * 1024 * 1024;
-let device: Fsusb2i | undefined,
+let device: SianoRio | undefined,
+  firmware: Uint8Array | undefined,
   busy = false,
   receiving = false,
   controller: AbortController | undefined,
@@ -32,11 +33,10 @@ function log(message: string) {
 }
 function refresh() {
   const connected = !!device && !device.closed;
-  button("connect").disabled =
-    busy || receiving || connected || !("usb" in navigator);
+  button("connect").disabled = busy || connected || !("usb" in navigator);
   button("disconnect").disabled = !connected || busy || receiving;
-  for (const id of ["tune", "stats", "card-reset", "send", "receive"])
-    button(id).disabled = !connected || busy || receiving;
+  for (const id of ["tune", "stats", "receive"])
+    button(id).disabled = !connected || busy || (id === "receive" && receiving);
   button("receive-stop").disabled = !receiving;
   button("record").disabled = !receiving || !!recorder;
   button("stop").disabled = !recorder;
@@ -59,9 +59,22 @@ async function action(operation: () => Promise<void>) {
     refresh();
   }
 }
+element<HTMLInputElement>("firmware").onchange = async (event) => {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  firmware = file ? new Uint8Array(await file.arrayBuffer()) : undefined;
+  output(
+    "firmware-info",
+    file
+      ? `${file.name} (${file.size.toLocaleString()} bytes)`
+      : "未選択（ファームウェア起動済みのデバイスでは不要）",
+  );
+};
 button("connect").onclick = () => {
   // Start the chooser synchronously in this click's user activation.
-  const pending = Fsusb2i.request();
+  const pending = SianoRio.request({
+    firmware,
+    log: (line) => console.debug("[siano]", line),
+  });
   void action(async () => {
     device = await pending;
     output("device-info", {
@@ -70,7 +83,11 @@ button("connect").onclick = () => {
       pid: device.device.productId.toString(16),
       ...device.info,
     });
-    log("初期化完了");
+    log(
+      device.info.firmwareDownloaded
+        ? "ファームウェアを転送して初期化しました"
+        : "初期化完了",
+    );
   });
 };
 button("disconnect").onclick = () =>
@@ -81,38 +98,18 @@ button("disconnect").onclick = () =>
   });
 button("tune").onclick = () =>
   void action(async () => {
-    await device!.setChannel(
+    const bandwidth = element<HTMLSelectElement>("bandwidth")
+      .value as IsdbtBandwidth;
+    await device!.tuneChannel(
       Number(element<HTMLInputElement>("channel").value),
+      { bandwidth },
     );
-    const tuning = await device!.waitTuning();
-    output("statistics", {
-      tuning,
-      stream:
-        tuning.status === "locked" ? await device!.waitStream() : undefined,
-    });
-    log(`選局結果: ${tuning.status}`);
+    const statistics = await device!.waitLock();
+    output("statistics", statistics);
+    log(`選局結果: ${device!.status}`);
   });
 button("stats").onclick = () =>
-  void action(async () =>
-    output("statistics", {
-      statistics: await device!.readStatistics(),
-      tmcc: await device!.readTmcc(),
-    }),
-  );
-button("card-reset").onclick = () =>
-  void action(async () =>
-    output("card-output", `ATR: ${hex(await device!.resetCard())}`),
-  );
-button("send").onclick = () =>
-  void action(async () => {
-    const value = element<HTMLInputElement>("apdu").value.replace(/\s+/g, "");
-    if (!/^(?:[0-9a-fA-F]{2}){1,53}$/.test(value))
-      throw new Error("1〜53 bytes の16進数を入力してください");
-    const data = Uint8Array.from(value.match(/../g)!, (byte) =>
-      parseInt(byte, 16),
-    );
-    output("card-output", `Response: ${hex(await device!.transmitCard(data))}`);
-  });
+  void action(async () => output("statistics", await device!.readStatistics()));
 // --- TS reception: one USB stream shared by the recorder and the player ---
 button("receive").onclick = () => {
   if (!device || receiving) return;
@@ -124,11 +121,13 @@ button("receive").onclick = () => {
   let length = 0;
   void (async () => {
     try {
-      if (!(await source.waitStream()).locked)
-        throw new Error("TS 同期がありません。先に選局してください");
+      if (source.status !== "locked") log("警告: 復調がロックしていません");
       for await (const chunk of source.stream({ signal })) {
         length += chunk.length;
-        output("bytes", `${length.toLocaleString()} bytes`);
+        output(
+          "bytes",
+          `${length.toLocaleString()} bytes${source.droppedBytes ? `（取りこぼし ${source.droppedBytes.toLocaleString()} bytes）` : ""}`,
+        );
         if (recorder) {
           recorder.chunks.push(chunk);
           recorder.length += chunk.length;
@@ -174,7 +173,7 @@ function stopRecording() {
     downloadUrl = URL.createObjectURL(new Blob(chunks, { type: "video/mp2t" }));
     const link = element<HTMLAnchorElement>("download");
     link.href = downloadUrl;
-    link.download = `fsusb2i-${Date.now()}.ts`;
+    link.download = `siano-rio-${Date.now()}.ts`;
     link.hidden = false;
   }
   log(`録画停止: ${length.toLocaleString()} bytes`);
