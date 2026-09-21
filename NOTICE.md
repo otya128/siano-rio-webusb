@@ -21,3 +21,7 @@ Firmware in src/firmware-data.ts is copied byte-for-byte from it9175_fw.h (the u
     2013-02-27
 
 This notice preserves the upstream attribution and does not assert additional rights in the embedded third-party firmware.
+
+# Third-party components used by the demonstration page
+
+- [mpegts.js](https://github.com/xqq/mpegts.js) (Apache License 2.0, Copyright (C) Bilibili / magicxqq) is used by the browser demonstration (demo/, bundled into demo-dist/) to play the 1seg program via Media Source Extensions. It is not part of the driver library in src/.

@@ -32,12 +32,32 @@
           ><button id="stats" disabled>受信状態を取得</button>
         </div>
         <pre id="statistics">—</pre>
+      </section>
+      <section>
+        <h2>受信</h2>
         <div>
-          <button id="record" disabled>TS 録画を開始</button
-          ><button id="stop" disabled>停止して保存</button
+          <button id="receive" disabled>受信開始</button
+          ><button id="receive-stop" disabled>受信停止</button
           ><span id="bytes">0 bytes</span>
         </div>
+        <h3>TS 録画</h3>
+        <div>
+          <button id="record" disabled>録画開始</button
+          ><button id="stop" disabled>録画停止して保存</button>
+        </div>
         <a id="download" hidden>TS ファイルを保存</a>
+        <h3>ワンセグ再生</h3>
+        <div>
+          <label
+            >サービス
+            <select id="service">
+              <option value="">自動（最初のワンセグ）</option>
+            </select></label
+          ><button id="play" disabled>再生</button
+          ><button id="play-stop" disabled>再生停止</button>
+        </div>
+        <video id="video" controls playsinline width="320" height="180"></video>
+        <pre id="player-info">—</pre>
       </section>
       <section>
         <h2>カード</h2>

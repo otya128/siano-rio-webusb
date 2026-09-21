@@ -19,6 +19,16 @@ export type {
 export { MAX_APDU_LENGTH } from "./card.js";
 export { ProtocolError, TS_TRANSFER_SIZE } from "./protocol.js";
 export { TsPacketFramer } from "./ts.js";
+export {
+  OneSegFilter,
+  AccessUnitSplitter,
+  AdtsRepacketizer,
+  SectionAssembler,
+  crc32Mpeg2,
+  isPartialReceptionPmtPid,
+  PLAYABLE_STREAM_TYPES,
+} from "./oneseg.js";
+export type { TsProgram, ProgramFilterOptions } from "./oneseg.js";
 export interface OpenOptions {
   timeoutMs?: number;
   firmware?: Uint8Array;
